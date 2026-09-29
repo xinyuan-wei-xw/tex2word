@@ -224,14 +224,21 @@ def ocr_convert(pdf_path, project_dir, profile_name="default"):
     all_lines = []
     page_w = 2480  # A4 @300dpi fallback
     page_lines = []
-    for img in imgs:
+    for n, img in enumerate(imgs, 1):
         try:
             pix_w = pymupdf.Pixmap(img).width
             page_w = pix_w
         except Exception:
             pass
-        words = [w for w in ocr_tsv(img) if w["conf"] >= 30]
+        try:
+            words = [w for w in ocr_tsv(img) if w["conf"] >= 30]
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"tesseract timed out on page {n}/{len(imgs)} — "
+                "that page is too dense for the server at 300 DPI; "
+                "try a smaller PDF")
         page_lines.append(build_lines(words))
+    log.append(f"OCR done on {len(imgs)} pages")
     # global body height across all pages (per-page mode breaks on
     # heading-heavy pages)
     flat = [l for pls in page_lines for l in pls]

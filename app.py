@@ -204,10 +204,18 @@ def _run(st, uid, project_id, profile, kind):
     meta = st.get_meta(uid, project_id)
     meta["status"] = "converting"
     st.set_meta(uid, project_id, meta)
-    if kind == "ocr":
-        result = ocr_pipeline.ocr_convert(src, wd, profile_name=profile)
-    else:
-        result = pipeline.convert(wd, profile_name=profile)
+    try:
+        if kind == "ocr":
+            result = ocr_pipeline.ocr_convert(src, wd, profile_name=profile)
+        else:
+            result = pipeline.convert(wd, profile_name=profile)
+    except Exception as e:
+        # Never a bare 500: capture the real reason so the UI can show it
+        # (and the project meta keeps it for the Log view).
+        import traceback
+        traceback.print_exc()
+        result = {"ok": False, "log": [],
+                  "error": f"{type(e).__name__}: {e}"}
     meta["status"] = "done" if result["ok"] else "failed"
     meta["log"] = result.get("log", [])
     if result.get("error"):
