@@ -20,6 +20,7 @@
 """
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -28,6 +29,7 @@ import uuid
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from urllib.parse import quote as _urlquote
 
 import pipeline
 import ocr_pipeline
@@ -229,11 +231,37 @@ def convert(project_id: str, request: Request, user_id: str = "",
     return _run(st, uid, project_id, profile, "tex")
 
 
+def _safe_docx_name(raw, fallback):
+    """Download filename: original project name with .docx.
+
+    Strips the uploaded extension (.zip/.pdf), removes path separators
+    and control characters, keeps everything else (incl. non-ASCII).
+    """
+    base = (raw or "").strip() or fallback
+    low = base.lower()
+    for ext in (".zip", ".pdf", ".tex"):
+        if low.endswith(ext):
+            base = base[: -len(ext)]
+            break
+    base = re.sub(r'[\\/:"*?<>|\x00-\x1f]', "_", base).strip(" .") or fallback
+    if len(base) > 120:
+        base = base[:120].rstrip()
+    return base + ".docx"
+
+
+def _rfc5987(name):
+    """Percent-encode a filename for the filename*=UTF-8'' parameter."""
+    return _urlquote(name, safe="")
+
+
 @app.get("/api/download/{project_id}")
 def download(project_id: str, request: Request,
              background_tasks: BackgroundTasks, user_id: str = ""):
     st, uid, is_owner = _route(request, user_id)
-    url = st.download_url(uid, project_id)
+    meta = st.get_meta(uid, project_id) or {}
+    filename = _safe_docx_name(meta.get("name"), project_id)
+    url = st.download_url(uid, project_id, response_disposition=(
+        "attachment; filename*=UTF-8''" + _rfc5987(filename)))
     if url:
         # owner on Firebase: redirect to a signed URL (no deletion)
         return RedirectResponse(url)
@@ -243,7 +271,7 @@ def download(project_id: str, request: Request,
     if not is_owner:
         # guest policy: wipe the project right after the file is served
         background_tasks.add_task(st.delete_project, uid, project_id)
-    return FileResponse(fp, filename=f"{project_id}.docx",
+    return FileResponse(fp, filename=filename,
                         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
 

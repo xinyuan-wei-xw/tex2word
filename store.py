@@ -100,7 +100,7 @@ class LocalStore:
                           "output.docx")
         return fp if os.path.exists(fp) else None
 
-    def download_url(self, user_id, project_id):
+    def download_url(self, user_id, project_id, response_disposition=None):
         return None  # local mode serves the file directly
 
     def delete_project(self, user_id, project_id):
@@ -202,12 +202,15 @@ class FirebaseStore:
     def download_path(self, user_id, project_id):
         return None  # firebase mode redirects to a signed URL
 
-    def download_url(self, user_id, project_id):
+    def download_url(self, user_id, project_id, response_disposition=None):
         from datetime import timedelta
         blob = self._blob(user_id, project_id, "output.docx")
         if not blob.exists():
             return None
-        return blob.generate_signed_url(expiration=timedelta(hours=1))
+        kw = {"expiration": timedelta(hours=1)}
+        if response_disposition:
+            kw["response_disposition"] = response_disposition
+        return blob.generate_signed_url(**kw)
 
     def delete_project(self, user_id, project_id):
         prefix = f"tex2word/{user_id}/{project_id}/"
