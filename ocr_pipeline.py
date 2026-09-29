@@ -1,16 +1,20 @@
 """Mode B: scanned / poor-quality PDF -> OCR -> clean structured .docx.
 
-Does NOT replicate the original layout. Produces a standard, readable,
-editable document: Title + Heading 1/2 + body paragraphs.
+Two layout modes:
+  * AI layout (GEMINI_API_KEY set): a vision LLM reconstructs each page's
+    original layout — reading order, columns, real tables, embedded figures
+    placed where they appear (see llm_layout.py).
+  * Classic (no key): heuristic Title/Heading/paragraph structure.
 
 Pipeline:
   1. Render each PDF page to image (PyMuPDF, 300 DPI).
   2. Tesseract OCR with TSV output (word boxes + bboxes).
      Languages: chi_sim+eng (mixed Chinese/English academic docs).
-  3. Rebuild lines/blocks; estimate body font size per page from median
-     line height; lines clearly larger than body -> headings
-     (largest -> Heading 1, next tier -> Heading 2, first-page largest -> Title).
-  4. Emit docx with the standard style profile.
+  3a. AI mode: per-page vision-LLM layout -> native Word constructs.
+  3b. Classic: rebuild lines/blocks; estimate body font size per page from
+     median line height; lines clearly larger than body -> headings
+     (largest -> Heading 1, next tier -> Heading 2, first-page largest ->
+     Title); emit docx with the standard style profile.
 """
 import csv
 import glob
@@ -72,13 +76,13 @@ def _ocr_page_with_dpi_fallback(pdf_path, index, img, pages_dir, n, total,
                                 log):
     """OCR one page; on tesseract timeout re-render smaller and retry.
 
-    Returns the word list. Raises RuntimeError if tesseract still times
-    out at 150 DPI.
+    Returns (word list, dpi actually used). Raises RuntimeError if
+    tesseract still times out at 150 DPI.
     """
     dpi = DPI
     while True:
         try:
-            return [w for w in ocr_tsv(img) if w["conf"] >= 30]
+            return [w for w in ocr_tsv(img) if w["conf"] >= 30], dpi
         except subprocess.TimeoutExpired:
             pass
         if dpi == DPI:
@@ -160,6 +164,7 @@ def build_lines(words):
         out.append({"key": key, "text": text,
                     "height": h, "width": width,
                     "left": min(w["left"] for w in ws),
+                    "top": statistics.median(w["top"] for w in ws),
                     "conf": statistics.median(w["conf"] for w in ws)})
     return out
 
@@ -286,14 +291,24 @@ def ocr_convert(pdf_path, project_dir, profile_name="default",
         all_lines = []
         page_w = 2480  # A4 @300dpi fallback
         page_lines = []
+        page_sizes = []  # (width_px, height_px) of the image actually OCR'd
+        page_dpis = []   # dpi actually used per page (DPI fallback)
+        N = len(imgs)
+        use_ai = bool(os.environ.get("GEMINI_API_KEY"))
+        # AI mode doubles the progress scale: OCR pages 1..N, then the
+        # vision-LLM layout pass reports N+1..2N
+        total = 2 * N if use_ai else N
         for i, img in enumerate(imgs):
             n = i + 1
-            words = _ocr_page_with_dpi_fallback(
-                pdf_path, i, img, pages_dir, n, len(imgs), log)
+            words, used_dpi = _ocr_page_with_dpi_fallback(
+                pdf_path, i, img, pages_dir, n, N, log)
             try:
-                page_w = pymupdf.Pixmap(img).width
+                pm = pymupdf.Pixmap(img)
+                page_w = pm.width
+                page_sizes.append((pm.width, pm.height))
             except Exception:
-                pass
+                page_sizes.append((page_w, int(page_w * 11 / 8.5)))
+            page_dpis.append(used_dpi)
             page_lines.append(build_lines(words))
             # keep the app-level lock fresh + report progress
             if os.path.exists(lock):
@@ -303,10 +318,24 @@ def ocr_convert(pdf_path, project_dir, profile_name="default",
                     pass
             if progress_cb:
                 try:
-                    progress_cb(n, len(imgs))
+                    if use_ai:
+                        progress_cb(n, total, f"OCR: page {n} of {N}")
+                    else:
+                        progress_cb(n, total)
                 except Exception:
                     pass
         log.append(f"OCR done on {len(imgs)} pages")
+
+        if use_ai:
+            try:
+                import llm_layout
+                out = llm_layout.ai_layout_convert(
+                    pdf_path, project_dir, pages_dir, page_lines,
+                    page_sizes, page_dpis, imgs, progress_cb, log)
+                return {"ok": True, "log": log, "docx": out}
+            except Exception as e:
+                log.append(f"AI layout unavailable ({e}); "
+                           "falling back to classic layout")
         # global body height across all pages (per-page mode breaks on
         # heading-heavy pages)
         flat = [l for pls in page_lines for l in pls]

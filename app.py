@@ -250,12 +250,13 @@ def _start_run(st, uid, project_id, profile, kind):
 def _run_sync(st, uid, project_id, wd, src, profile, kind, lock):
     """Background conversion worker (never blocks the HTTP request)."""
     try:
-        def _cb(done, total):
-            # progress reporter for the OCR loop; polled by the UI
+        def _cb(done, total, label=None):
+            # progress reporter for the conversion; polled by the UI
             try:
                 m = st.get_meta(uid, project_id)
                 m["progress"] = done
                 m["progress_total"] = total
+                m["progress_label"] = label or ""
                 st.set_meta(uid, project_id, m)
             except Exception:
                 pass
@@ -282,6 +283,7 @@ def _run_sync(st, uid, project_id, wd, src, profile, kind, lock):
             meta.pop("error", None)
         meta.pop("progress", None)
         meta.pop("progress_total", None)
+        meta.pop("progress_label", None)
         st.sync_back(uid, project_id, meta)
     finally:
         try:
@@ -297,7 +299,8 @@ def progress(project_id: str, request: Request, user_id: str = ""):
     meta = st.get_meta(uid, project_id) or {}
     return {"status": meta.get("status", ""),
             "progress": meta.get("progress", 0),
-            "progress_total": meta.get("progress_total", 0)}
+            "progress_total": meta.get("progress_total", 0),
+            "label": meta.get("progress_label", "")}
 
 
 @app.post("/api/ocr/{project_id}")

@@ -222,7 +222,7 @@ function pollProgress(pid){
       const bar=document.getElementById('pb-'+pid),tx=document.getElementById('pt-'+pid);
       if(s&&s.progress_total>0&&bar){
         bar.firstElementChild.style.width=Math.round(100*s.progress/s.progress_total)+'%';
-        if(tx)tx.textContent='Converting… page '+s.progress+' of '+s.progress_total;
+        if(tx)tx.textContent=s.label||('Converting… page '+s.progress+' of '+s.progress_total);
       }else if(tx&&s&&s.status==='converting'){tx.textContent='Converting…';}
     }catch(e){}
   },2000);
