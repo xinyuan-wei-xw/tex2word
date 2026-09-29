@@ -67,15 +67,20 @@ def _fb_app_init():
     try:
         import firebase_admin
         from firebase_admin import credentials
-        sa = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-        opts = {"projectId": FIREBASE_PROJECT}
-        if sa:
-            _fb_app = firebase_admin.initialize_app(
-                credentials.Certificate(json.loads(sa)), opts)
-        else:
-            # No service account (e.g. local dev): token verification will
-            # fail closed; everyone is treated as guest.
-            _fb_app = firebase_admin.initialize_app(options=opts)
+        try:
+            # The store module may have initialized the default app already;
+            # initialize_app() raises if called twice.
+            _fb_app = firebase_admin.get_app()
+        except ValueError:
+            sa = os.environ.get("FIREBASE_SERVICE_ACCOUNT_JSON") or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+            opts = {"projectId": FIREBASE_PROJECT}
+            if sa:
+                _fb_app = firebase_admin.initialize_app(
+                    credentials.Certificate(json.loads(sa)), opts)
+            else:
+                # No service account (e.g. local dev): token verification will
+                # fail closed; everyone is treated as guest.
+                _fb_app = firebase_admin.initialize_app(options=opts)
         _fb_ok = True
     except Exception as e:
         print(f"tex2word: firebase-admin unavailable ({e}); "
