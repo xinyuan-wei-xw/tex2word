@@ -36,9 +36,13 @@ def render_pages(pdf_path, out_dir, dpi=DPI):
         pix = page.get_pixmap(dpi=dpi)
         fp = os.path.join(out_dir, f"page_{i:03d}.png")
         # write to temp name + atomic rename: a concurrent reader must
-        # never see a partially written PNG (tesseract "truncated file")
-        tmp = fp + ".part"
-        pix.save(tmp)
+        # never see a partially written PNG (tesseract "truncated file").
+        # NOTE: pix.save() picks the image format from the filename
+        # extension, so a ".part" temp suffix crashes it — write the PNG
+        # bytes ourselves instead.
+        tmp = fp + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(pix.tobytes("png"))
         os.replace(tmp, fp)
         paths.append(fp)
     doc.close()
