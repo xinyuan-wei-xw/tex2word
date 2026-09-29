@@ -18,6 +18,7 @@ import os
 import shutil
 import statistics
 import subprocess
+import time
 import uuid
 
 import pymupdf
@@ -201,8 +202,13 @@ def needs_no_space(a, b):
            bool(re.search(r"^[\u4e00-\u9fff]", b or ""))
 
 
-def ocr_convert(pdf_path, project_dir, profile_name="default"):
-    """Full Mode-B pipeline. Writes output.docx in project_dir."""
+def ocr_convert(pdf_path, project_dir, profile_name="default",
+                progress_cb=None):
+    """Full Mode-B pipeline. Writes output.docx in project_dir.
+
+    progress_cb(done, total) is called after each OCR'd page so the UI
+    can show a progress bar.
+    """
     log = []
     import sys
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -211,88 +217,111 @@ def ocr_convert(pdf_path, project_dir, profile_name="default"):
 
     pages_dir = os.path.join(project_dir,
                              "ocr_pages_" + uuid.uuid4().hex[:8])
-    # drop page images from earlier runs; each run gets its own dir so
-    # two concurrent converts of the same project can't share files
+    # drop page images from earlier runs — but never a fresh dir: a second
+    # conversion must not delete another run's files mid-OCR (the app-level
+    # .converting lock normally prevents this; this is belt and braces)
+    now = time.time()
     for old in glob.glob(os.path.join(project_dir, "ocr_pages*")):
-        shutil.rmtree(old, ignore_errors=True)
-    imgs = render_pages(pdf_path, pages_dir)
-    log.append(f"rendered {len(imgs)} pages at {DPI} DPI")
-
-    try:
-        subprocess.run(["tesseract", "--version"], capture_output=True,
-                       check=True, timeout=10)
-    except Exception:
-        return {"ok": False, "log": log,
-                "error": "tesseract not installed on server"}
-
-    all_lines = []
-    page_w = 2480  # A4 @300dpi fallback
-    page_lines = []
-    for n, img in enumerate(imgs, 1):
         try:
-            pix_w = pymupdf.Pixmap(img).width
-            page_w = pix_w
-        except Exception:
+            if now - os.path.getmtime(old) > 3600:
+                shutil.rmtree(old, ignore_errors=True)
+        except OSError:
             pass
+    lock = os.path.join(project_dir, ".converting")
+    try:
+        imgs = render_pages(pdf_path, pages_dir)
+        log.append(f"rendered {len(imgs)} pages at {DPI} DPI")
+
         try:
-            words = [w for w in ocr_tsv(img) if w["conf"] >= 30]
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                f"tesseract timed out on page {n}/{len(imgs)} — "
-                "that page is too dense for the server at 300 DPI; "
-                "try a smaller PDF")
-        page_lines.append(build_lines(words))
-    log.append(f"OCR done on {len(imgs)} pages")
-    # global body height across all pages (per-page mode breaks on
-    # heading-heavy pages)
-    flat = [l for pls in page_lines for l in pls]
-    g_body = body_height(flat) if flat else 1.0
-    for i, lines in enumerate(page_lines):
-        all_lines.extend(classify(lines, page_w, body_h=g_body,
-                                  allow_title=(i == 0)))
-    log.append(f"OCR lines: {len(all_lines)}")
-    if not all_lines:
-        return {"ok": False, "log": log, "error": "no text recognized"}
+            subprocess.run(["tesseract", "--version"], capture_output=True,
+                           check=True, timeout=10)
+        except Exception:
+            return {"ok": False, "log": log,
+                    "error": "tesseract not installed on server"}
 
-    paras = merge_paragraphs(all_lines)
-    n_head = sum(1 for p in paras if p["style"] != "Normal")
-    log.append(f"paragraphs: {len(paras)}, headings detected: {n_head}")
+        all_lines = []
+        page_w = 2480  # A4 @300dpi fallback
+        page_lines = []
+        for n, img in enumerate(imgs, 1):
+            try:
+                pix_w = pymupdf.Pixmap(img).width
+                page_w = pix_w
+            except Exception:
+                pass
+            try:
+                words = [w for w in ocr_tsv(img) if w["conf"] >= 30]
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    f"tesseract timed out on page {n}/{len(imgs)} — "
+                    "that page is too dense for the server at 300 DPI; "
+                    "try a smaller PDF")
+            page_lines.append(build_lines(words))
+            # keep the app-level lock fresh + report progress
+            if os.path.exists(lock):
+                try:
+                    os.utime(lock, None)
+                except OSError:
+                    pass
+            if progress_cb:
+                try:
+                    progress_cb(n, len(imgs))
+                except Exception:
+                    pass
+        log.append(f"OCR done on {len(imgs)} pages")
+        # global body height across all pages (per-page mode breaks on
+        # heading-heavy pages)
+        flat = [l for pls in page_lines for l in pls]
+        g_body = body_height(flat) if flat else 1.0
+        for i, lines in enumerate(page_lines):
+            all_lines.extend(classify(lines, page_w, body_h=g_body,
+                                      allow_title=(i == 0)))
+        log.append(f"OCR lines: {len(all_lines)}")
+        if not all_lines:
+            return {"ok": False, "log": log, "error": "no text recognized"}
 
-    profile = load_profile(profile_name)
-    doc = Document()
-    styles = doc.styles
-    # ensure our profile styles exist with the right look
-    cfg_map = profile["styles"]
-    for sname, cfg in cfg_map.items():
-        if sname not in styles:
-            continue
-        s = styles[sname]
-        s.font.name = cfg.get("font", "Calibri")
-        if cfg.get("size_pt"):
-            s.font.size = Pt(cfg["size_pt"])
-        if cfg.get("bold") is not None:
-            s.font.bold = cfg["bold"]
-        if cfg.get("italic") is not None:
-            s.font.italic = cfg["italic"]
-        if cfg.get("color"):
-            s.font.color.rgb = _hex_rgb(cfg["color"])
-        pf = s.paragraph_format
-        if cfg.get("space_before_pt") is not None:
-            pf.space_before = Pt(cfg["space_before_pt"])
-        if cfg.get("space_after_pt") is not None:
-            pf.space_after = Pt(cfg["space_after_pt"])
-        align = {"center": WD_ALIGN_PARAGRAPH.CENTER,
-                 "right": WD_ALIGN_PARAGRAPH.RIGHT,
-                 "justify": WD_ALIGN_PARAGRAPH.JUSTIFY}.get(cfg.get("align"))
-        if align is not None:
-            pf.alignment = align
+        paras = merge_paragraphs(all_lines)
+        n_head = sum(1 for p in paras if p["style"] != "Normal")
+        log.append(f"paragraphs: {len(paras)}, headings detected: {n_head}")
 
-    for p in paras:
-        if not p["text"].strip():
-            continue
-        doc.add_paragraph(p["text"], style=p["style"])
+        profile = load_profile(profile_name)
+        doc = Document()
+        styles = doc.styles
+        # ensure our profile styles exist with the right look
+        cfg_map = profile["styles"]
+        for sname, cfg in cfg_map.items():
+            if sname not in styles:
+                continue
+            s = styles[sname]
+            s.font.name = cfg.get("font", "Calibri")
+            if cfg.get("size_pt"):
+                s.font.size = Pt(cfg["size_pt"])
+            if cfg.get("bold") is not None:
+                s.font.bold = cfg["bold"]
+            if cfg.get("italic") is not None:
+                s.font.italic = cfg["italic"]
+            if cfg.get("color"):
+                s.font.color.rgb = _hex_rgb(cfg["color"])
+            pf = s.paragraph_format
+            if cfg.get("space_before_pt") is not None:
+                pf.space_before = Pt(cfg["space_before_pt"])
+            if cfg.get("space_after_pt") is not None:
+                pf.space_after = Pt(cfg["space_after_pt"])
+            align = {"center": WD_ALIGN_PARAGRAPH.CENTER,
+                     "right": WD_ALIGN_PARAGRAPH.RIGHT,
+                     "justify": WD_ALIGN_PARAGRAPH.JUSTIFY}.get(cfg.get("align"))
+            if align is not None:
+                pf.alignment = align
 
-    out = os.path.join(project_dir, "output.docx")
-    doc.save(out)
-    log.append("wrote " + out)
-    return {"ok": True, "log": log, "docx": out}
+        for p in paras:
+            if not p["text"].strip():
+                continue
+            doc.add_paragraph(p["text"], style=p["style"])
+
+        out = os.path.join(project_dir, "output.docx")
+        doc.save(out)
+        log.append("wrote " + out)
+        return {"ok": True, "log": log, "docx": out}
+    finally:
+        # always drop this run's page images; stale dirs from crashed runs
+        # are cleaned by the age check at the top of the next run
+        shutil.rmtree(pages_dir, ignore_errors=True)

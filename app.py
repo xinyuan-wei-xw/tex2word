@@ -196,47 +196,122 @@ async def upload(request: Request, user_id: str = Form(""),
     return _new_project(st, uid, file.filename, name, file.file, mode=mode)
 
 
-def _run(st, uid, project_id, profile, kind):
+LOCK_STALE_SEC = 1800  # a lock untouched this long is a crashed run
+
+
+def _start_run(st, uid, project_id, profile, kind):
+    """Start a conversion in a background thread; return immediately.
+
+    OCR can take many minutes (tesseract on a free-tier CPU). Running it
+    inside the HTTP request trips the hosting proxy's request timeout
+    (HTTP 502) — so the request only starts the worker and the UI polls
+    /api/progress/{project_id} for status.
+    """
     wd = st.work_dir(uid, project_id)
     src = os.path.join(wd, "scan.pdf" if kind == "ocr" else "upload.zip")
     if not os.path.exists(src):
         raise HTTPException(404, "project not found")
+    # Per-project lock: a second click while a conversion is still running
+    # must not start a parallel run (its temp-dir cleanup would delete the
+    # first run's page images mid-OCR). The OCR loop touches the lock file
+    # after every page, so only a truly dead run goes stale.
+    lock = os.path.join(wd, ".converting")
+    if os.path.exists(lock):
+        if time.time() - os.path.getmtime(lock) < LOCK_STALE_SEC:
+            return {"ok": False,
+                    "error": "a conversion is already running for this "
+                             "project — please wait for it to finish"}
+        try:
+            os.remove(lock)  # stale lock from a crashed run
+        except OSError:
+            pass
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, b"converting")
+        os.close(fd)
+    except FileExistsError:
+        return {"ok": False,
+                "error": "a conversion is already running for this "
+                         "project — please wait for it to finish"}
     meta = st.get_meta(uid, project_id)
     meta["status"] = "converting"
+    meta.pop("progress", None)
+    meta.pop("progress_total", None)
+    meta.pop("error", None)
     st.set_meta(uid, project_id, meta)
+    t = threading.Thread(target=_run_sync,
+                         args=(st, uid, project_id, wd, src, profile,
+                               kind, lock),
+                         daemon=True)
+    t.start()
+    return {"ok": True, "started": True}
+
+
+def _run_sync(st, uid, project_id, wd, src, profile, kind, lock):
+    """Background conversion worker (never blocks the HTTP request)."""
     try:
-        if kind == "ocr":
-            result = ocr_pipeline.ocr_convert(src, wd, profile_name=profile)
+        def _cb(done, total):
+            # progress reporter for the OCR loop; polled by the UI
+            try:
+                m = st.get_meta(uid, project_id)
+                m["progress"] = done
+                m["progress_total"] = total
+                st.set_meta(uid, project_id, m)
+            except Exception:
+                pass
+
+        try:
+            if kind == "ocr":
+                result = ocr_pipeline.ocr_convert(
+                    src, wd, profile_name=profile, progress_cb=_cb)
+            else:
+                result = pipeline.convert(wd, profile_name=profile)
+        except Exception as e:
+            # Never a bare 500: capture the real reason so the UI can show it
+            # (and the project meta keeps it for the Log view).
+            import traceback
+            traceback.print_exc()
+            result = {"ok": False, "log": [],
+                      "error": f"{type(e).__name__}: {e}"}
+        meta = st.get_meta(uid, project_id)
+        meta["status"] = "done" if result["ok"] else "failed"
+        meta["log"] = result.get("log", [])
+        if result.get("error"):
+            meta["error"] = result["error"]
         else:
-            result = pipeline.convert(wd, profile_name=profile)
-    except Exception as e:
-        # Never a bare 500: capture the real reason so the UI can show it
-        # (and the project meta keeps it for the Log view).
-        import traceback
-        traceback.print_exc()
-        result = {"ok": False, "log": [],
-                  "error": f"{type(e).__name__}: {e}"}
-    meta["status"] = "done" if result["ok"] else "failed"
-    meta["log"] = result.get("log", [])
-    if result.get("error"):
-        meta["error"] = result["error"]
-    st.sync_back(uid, project_id, meta)
-    return {"ok": result["ok"], "log": result.get("log", []),
-            "error": result.get("error")}
+            meta.pop("error", None)
+        meta.pop("progress", None)
+        meta.pop("progress_total", None)
+        st.sync_back(uid, project_id, meta)
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+
+
+@app.get("/api/progress/{project_id}")
+def progress(project_id: str, request: Request, user_id: str = ""):
+    """Polled by the UI while a conversion is running."""
+    st, uid, _ = _route(request, user_id)
+    meta = st.get_meta(uid, project_id) or {}
+    return {"status": meta.get("status", ""),
+            "progress": meta.get("progress", 0),
+            "progress_total": meta.get("progress_total", 0)}
 
 
 @app.post("/api/ocr/{project_id}")
 def ocr(project_id: str, request: Request, user_id: str = "",
         profile: str = "default"):
     st, uid, _ = _route(request, user_id)
-    return _run(st, uid, project_id, profile, "ocr")
+    return _start_run(st, uid, project_id, profile, "ocr")
 
 
 @app.post("/api/convert/{project_id}")
 def convert(project_id: str, request: Request, user_id: str = "",
             profile: str = "default"):
     st, uid, _ = _route(request, user_id)
-    return _run(st, uid, project_id, profile, "tex")
+    return _start_run(st, uid, project_id, profile, "tex")
 
 
 def _safe_docx_name(raw, fallback):

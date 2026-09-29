@@ -42,6 +42,9 @@
   .empty{color:var(--muted);font-size:14px;background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:26px;text-align:center}
   .spin{display:inline-block;width:14px;height:14px;border:2px solid #c9d4e8;border-top-color:var(--accent);border-radius:50%;animation:s 0.8s linear infinite;vertical-align:-2px;margin-right:6px}
   @keyframes s{to{transform:rotate(360deg)}}
+  .pbar{height:8px;background:#e8eaf0;border-radius:99px;overflow:hidden;margin:12px 0 4px}
+  .pfill{height:100%;width:0%;background:var(--accent);border-radius:99px;transition:width .4s}
+  .ptext{font-size:12px;color:var(--muted)}
   footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
@@ -58,7 +61,7 @@
   <div class="card" style="margin-bottom:8px">
     <h2>Upload → Word</h2>
     <p class="desc">Drop a LaTeX project as a <b>.zip</b> (.tex, .bib, figures, compiled PDF) for a high-fidelity conversion — or a <b>scanned / image PDF</b> for OCR into a clean, structured Word document. The right pipeline is picked automatically.</p>
-    <input type="text" id="pname" placeholder="Project name (e.g. CHI 2027 paper)">
+    <input type="text" id="pname" placeholder="Project name">
     <div class="drop" id="dz"><b>Drop .zip or .pdf here or click to choose</b><span id="zfn">.zip → LaTeX project · .pdf → scanned / image PDF</span></div>
     <input type="file" id="zfile" accept=".zip,.pdf" hidden>
     <button class="btn" id="upbtn" onclick="doUpload()">Upload</button>
@@ -178,14 +181,16 @@ async function refresh(){
   $('plist').innerHTML=ps.map(p=>{
     const isOcr=p.mode==='ocr';
     const st=p.status==='done'?'<span class="pill done">ready</span>'
-      :p.status==='error'?'<span class="pill err">failed</span>'
-      :p.status==='working'?'<span class="pill">working…</span>'
+      :p.status==='failed'?'<span class="pill err">failed</span>'
+      :(p.status==='converting'||p.status==='working')?'<span class="pill">working…</span>'
       :'<span class="pill">uploaded</span>';
+    const converting=CONVERTING.has(p.id);
     return `<div class="proj">
       <div class="row1"><span class="name">${esc(p.name)}</span>
         <span><span class="pill ${isOcr?'ocr':'latex'}">${isOcr?'scan → OCR':'LaTeX'}</span> ${st}</span></div>
       <div class="actions">
-        ${p.status==='uploaded'||p.status==='error'?`<button class="btn ghost" onclick="doConvert('${p.id}',${isOcr},this)">${isOcr?'OCR to Word':'Convert to Word'}</button>`:''}
+        ${converting?`<div style="flex:1;min-width:200px"><div class="pbar" id="pb-${p.id}"><div class="pfill"></div></div><div class="ptext" id="pt-${p.id}">Converting…</div></div>`
+        :p.status==='uploaded'||p.status==='failed'?`<button class="btn ghost" onclick="doConvert('${p.id}',${isOcr},this)">${isOcr?'OCR to Word':'Convert to Word'}</button>`:''}
         ${p.has_docx?`<button class="btn ghost" onclick="dlWord('${p.id}')">⬇ Download .docx</button>`:''}
         ${p.log?`<button class="btn ghost" onclick="document.getElementById('log-${p.id}').classList.toggle('show')">Log</button>`:''}
         ${IS_OWNER?`<button class="btn danger" onclick="doDelete('${p.id}')">Delete</button>`:''}
@@ -196,14 +201,41 @@ async function refresh(){
   }).join('');
 }
 
+const CONVERTING=new Set();  // project ids with a conversion in flight
 async function doConvert(pid,isOcr,btn){
-  if(btn)btn.disabled=true;
-  refresh();
+  if(CONVERTING.has(pid))return;  // ignore double clicks
+  CONVERTING.add(pid);refresh();
+  const stop=pollProgress(pid);
   try{
+    // the server starts a background worker and returns immediately;
+    // we poll /api/progress until it finishes
     const r=await api((isOcr?'/api/ocr/':'/api/convert/')+pid+qs(),{method:'POST'});
-    if(!r.ok)alert('Failed: '+(r.error||'see log'));
+    if(r.started){await waitDone(pid);}
+    else if(!r.ok){alert('Failed: '+(r.error||'see log'));}
   }catch(e){alert('Failed: '+e.message);}
-  refresh();
+  stop();CONVERTING.delete(pid);refresh();
+}
+function pollProgress(pid){
+  const iv=setInterval(async()=>{
+    try{
+      const s=await api('/api/progress/'+pid+qs());
+      const bar=document.getElementById('pb-'+pid),tx=document.getElementById('pt-'+pid);
+      if(s&&s.progress_total>0&&bar){
+        bar.firstElementChild.style.width=Math.round(100*s.progress/s.progress_total)+'%';
+        if(tx)tx.textContent='Converting… page '+s.progress+' of '+s.progress_total;
+      }else if(tx&&s&&s.status==='converting'){tx.textContent='Converting…';}
+    }catch(e){}
+  },2000);
+  return ()=>clearInterval(iv);
+}
+async function waitDone(pid){
+  for(let i=0;i<3600;i++){  // up to ~2h
+    await new Promise(r=>setTimeout(r,2000));
+    try{
+      const s=await api('/api/progress/'+pid+qs());
+      if(s.status==='done'||s.status==='failed')return;
+    }catch(e){}
+  }
 }
 async function doDelete(pid){
   if(!confirm('Delete this project and its Word file?'))return;
@@ -223,7 +255,7 @@ window.addEventListener('pagehide',()=>{
   if(window.SKIP_CLEANUP||IS_OWNER)return;
   try{navigator.sendBeacon('/api/logout-cleanup'+qs());}catch(e){}
 });
-refresh();setInterval(refresh,8000);
+refresh();setInterval(()=>{if(!CONVERTING.size)refresh();},8000);
 </script>
 </body>
 </html>
