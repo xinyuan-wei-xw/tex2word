@@ -4,8 +4,8 @@
   or a scanned PDF for OCR mode.
 - Pipeline: pipeline.convert() / ocr_pipeline.ocr_convert() -> output.docx
 - Identity: Firebase email/password login (same x-planner-99dd3 project as
-  X Planner). The owner is the account whose email matches OWNER_EMAIL
-  (default xinyuan.wei.xw@gmail.com). The browser sends the Firebase ID
+  X Planner). The owner is the account whose email matches OWNER_EMAIL.
+  The browser sends the Firebase ID
   token as `Authorization: Bearer <token>`; the server verifies it with
   firebase-admin.
 - Storage:
@@ -37,7 +37,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 
 # Owner identity: the Firebase account with this email. Fail closed: only a
 # cryptographically verified ID token with this email counts as owner.
-OWNER_EMAIL = os.environ.get("OWNER_EMAIL", "xinyuan.wei.xw@gmail.com").lower()
+OWNER_EMAIL = os.environ.get("OWNER_EMAIL", "").lower()
 OWNER_UID = "owner"
 FIREBASE_PROJECT = "x-planner-99dd3"
 # Web API key is a public client identifier (not a secret); the user pastes it
@@ -166,7 +166,8 @@ def list_projects(request: Request, user_id: str = ""):
 
 def _new_project(st, uid, filename, name, fileobj, mode=None):
     pid = time.strftime("%Y%m%d-%H%M%S") + "_" + uuid.uuid4().hex[:6]
-    blob_name = "scan.pdf" if filename.endswith(".pdf") else "upload.zip"
+    blob_name = "scan.pdf" if filename.lower().endswith(".pdf") \
+        else "upload.zip"
     st.save_upload(uid, pid, blob_name, fileobj)
     meta = {"id": pid, "name": name or filename, "status": "uploaded",
             "created": pid.split("_")[0]}
@@ -180,21 +181,17 @@ def _new_project(st, uid, filename, name, fileobj, mode=None):
 async def upload(request: Request, user_id: str = Form(""),
                  name: str = Form(""),
                  file: UploadFile = File(...)):
-    if not file.filename.endswith(".zip"):
-        raise HTTPException(400, "please upload a .zip of your LaTeX project")
+    """Single upload entry: .zip -> LaTeX pipeline, .pdf -> OCR pipeline."""
+    fn = (file.filename or "").lower()
+    if fn.endswith(".zip"):
+        mode = None
+    elif fn.endswith(".pdf"):
+        mode = "ocr"
+    else:
+        raise HTTPException(
+            400, "please upload a .zip of your LaTeX project or a scanned .pdf")
     st, uid, _ = _route(request, user_id)
-    return _new_project(st, uid, file.filename, name, file.file)
-
-
-@app.post("/api/upload-pdf")
-async def upload_pdf(request: Request, user_id: str = Form(""),
-                     name: str = Form(""),
-                     file: UploadFile = File(...)):
-    """Mode B: scanned PDF -> OCR -> clean structured Word."""
-    if not file.filename.endswith(".pdf"):
-        raise HTTPException(400, "please upload a .pdf")
-    st, uid, _ = _route(request, user_id)
-    return _new_project(st, uid, file.filename, name, file.file, mode="ocr")
+    return _new_project(st, uid, file.filename, name, file.file, mode=mode)
 
 
 def _run(st, uid, project_id, profile, kind):
@@ -252,9 +249,11 @@ def download(project_id: str, request: Request,
 
 @app.delete("/api/projects/{project_id}")
 def delete_project(project_id: str, request: Request, user_id: str = ""):
-    """Manual delete. Guest auto-cleanup on logout calls this
-    for every project."""
-    st, uid, _ = _route(request, user_id)
+    """Owner-only manual delete. Guest files auto-wipe on pagehide
+    and right after a guest download is served."""
+    st, uid, is_owner = _route(request, user_id)
+    if not is_owner:
+        raise HTTPException(403, "only the owner can delete projects")
     st.delete_project(uid, project_id)
     return {"deleted": project_id}
 

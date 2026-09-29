@@ -55,26 +55,14 @@
     <p>Convert LaTeX projects and PDFs into clean Word documents.</p>
   </header>
 
-  <div class="modes">
-    <div class="card">
-      <span class="tag">MODE A · HIGH FIDELITY</span>
-      <h2>LaTeX project → Word</h2>
-      <p class="desc">Upload the whole project as a <b>.zip</b> — .tex, .bib, figures, and the compiled PDF. Text, math, tables, citations and figures are converted; formatting follows the compiled PDF.</p>
-      <input type="text" id="pname" placeholder="Project name (e.g. CHI 2027 paper)">
-      <div class="drop" id="dzip"><b>Drop .zip here or click to choose</b><span id="zfn">tex + bib + figures + PDF</span></div>
-      <input type="file" id="zfile" accept=".zip" hidden>
-      <button class="btn" id="upbtn" onclick="doUpload('zip')">Upload project</button>
-      <div class="msg" id="upmsg"></div>
-    </div>
-    <div class="card">
-      <span class="tag">MODE B · OCR</span>
-      <h2>Scanned PDF → Word</h2>
-      <p class="desc">Upload a <b>scanned / image PDF</b>. Pages are OCR'd and written into a clean, structured Word document with headings — original layout is not replicated.</p>
-      <div class="drop" id="dpdf"><b>Drop .pdf here or click to choose</b><span id="pfn">scanned or image-based PDF</span></div>
-      <input type="file" id="pfile" accept=".pdf" hidden>
-      <button class="btn" id="upbtn2" onclick="doUpload('pdf')">Upload PDF</button>
-      <div class="msg" id="upmsg2"></div>
-    </div>
+  <div class="card" style="margin-bottom:8px">
+    <h2>Upload → Word</h2>
+    <p class="desc">Drop a LaTeX project as a <b>.zip</b> (.tex, .bib, figures, compiled PDF) for a high-fidelity conversion — or a <b>scanned / image PDF</b> for OCR into a clean, structured Word document. The right pipeline is picked automatically.</p>
+    <input type="text" id="pname" placeholder="Project name (e.g. CHI 2027 paper)">
+    <div class="drop" id="dz"><b>Drop .zip or .pdf here or click to choose</b><span id="zfn">.zip → LaTeX project · .pdf → scanned / image PDF</span></div>
+    <input type="file" id="zfile" accept=".zip,.pdf" hidden>
+    <button class="btn" id="upbtn" onclick="doUpload()">Upload</button>
+    <div class="msg" id="upmsg"></div>
   </div>
 
   <h2 class="sec">Projects</h2>
@@ -130,7 +118,7 @@ function renderAuth(){
     bar.innerHTML='<span>'+esc(MYEMAIL)+'</span>'
       +'<button class="btn ghost" style="padding:5px 12px" onclick="doSignOut()">Sign out</button>';
   }else{
-    bar.innerHTML='<input type="email" id="em" placeholder="Email" value="xinyuan.wei.xw@gmail.com" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:210px">'
+    bar.innerHTML='<input type="email" id="em" placeholder="Email" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:210px">'
       +'<input type="password" id="pw" placeholder="Password" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:130px">'
       +'<button class="btn ghost" style="padding:5px 12px" onclick="doSignIn()">Sign in</button>'
       +'<span id="authmsg" style="color:#b3261e"></span>';
@@ -165,20 +153,20 @@ function bindDrop(dz,fi,fn){
   ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
   d.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0];if(f){$(fi).files=ev.dataTransfer.files;$(fn).textContent=f.name;}});
 }
-bindDrop('dzip','zfile','zfn'); bindDrop('dpdf','pfile','pfn');
+bindDrop('dz','zfile','zfn');
 
-async function doUpload(kind){
-  const fi=kind==='zip'?'zfile':'pfile', btn=kind==='zip'?'upbtn':'upbtn2', msg=kind==='zip'?'upmsg':'upmsg2';
-  const f=$(fi).files[0];
-  if(!f){setMsg(msg,'Choose a file first.','err');return;}
-  const b=$(btn);b.disabled=true;setMsg(msg,'<span class="spin"></span>Uploading…','');
+async function doUpload(){
+  const f=$('zfile').files[0];
+  if(!f){setMsg('upmsg','Choose a file first.','err');return;}
+  const fn=f.name.toLowerCase();
+  if(!(fn.endsWith('.zip')||fn.endsWith('.pdf'))){setMsg('upmsg','Please choose a .zip or .pdf file.','err');return;}
+  const b=$('upbtn');b.disabled=true;setMsg('upmsg','<span class="spin"></span>Uploading…','');
   try{
-    const fd=new FormData();fd.append('file',f);
-    if(kind==='zip')fd.append('name',$('pname').value);
-    const r=await api(kind==='zip'?'/api/upload':'/api/upload-pdf',{method:'POST',body:addAuth(fd)});
-    if(r.project_id){setMsg(msg,'Uploaded — see Projects below.','ok');$(fi).value='';}
-    else setMsg(msg,'Upload failed.','err');
-  }catch(e){setMsg(msg,'Upload failed: '+esc(e.message),'err');}
+    const fd=new FormData();fd.append('file',f);fd.append('name',$('pname').value);
+    const r=await api('/api/upload',{method:'POST',body:addAuth(fd)});
+    if(r.project_id){setMsg('upmsg','Uploaded — see Projects below.','ok');$('zfile').value='';$('zfn').textContent='.zip → LaTeX project · .pdf → scanned / image PDF';}
+    else setMsg('upmsg','Upload failed.','err');
+  }catch(e){setMsg('upmsg','Upload failed: '+esc(e.message),'err');}
   b.disabled=false;refresh();
 }
 function setMsg(id,html,cls){const e=$(id);e.className='msg '+cls;e.innerHTML=html;}
@@ -198,9 +186,9 @@ async function refresh(){
         <span><span class="pill ${isOcr?'ocr':'latex'}">${isOcr?'scan → OCR':'LaTeX'}</span> ${st}</span></div>
       <div class="actions">
         ${p.status==='uploaded'||p.status==='error'?`<button class="btn ghost" onclick="doConvert('${p.id}',${isOcr},this)">${isOcr?'OCR to Word':'Convert to Word'}</button>`:''}
-        ${p.has_docx?`<button class="btn ghost" onclick="location='/api/download/${p.id}'+qs()">⬇ Download .docx</button>`:''}
+        ${p.has_docx?`<button class="btn ghost" onclick="dlWord('${p.id}')">⬇ Download .docx</button>`:''}
         ${p.log?`<button class="btn ghost" onclick="document.getElementById('log-${p.id}').classList.toggle('show')">Log</button>`:''}
-        <button class="btn danger" onclick="doDelete('${p.id}')">Delete</button>
+        ${IS_OWNER?`<button class="btn danger" onclick="doDelete('${p.id}')">Delete</button>`:''}
       </div>
       ${p.error?`<div class="msg err">${esc(p.error)}</div>`:''}
       ${p.log?`<div class="log" id="log-${p.id}">${esc(p.log.join('\n'))}</div>`:''}
@@ -221,6 +209,20 @@ async function doDelete(pid){
   if(!confirm('Delete this project and its Word file?'))return;
   await api('/api/projects/'+pid+qs(),{method:'DELETE'});refresh();
 }
+function dlWord(pid){
+  // downloading must not trigger the guest auto-cleanup below:
+  // the page stays open on attachment downloads, and the server
+  // wipes the guest project right after serving the file anyway
+  window.SKIP_CLEANUP=true;
+  setTimeout(()=>{window.SKIP_CLEANUP=false;},5000);
+  location='/api/download/'+pid+qs();
+}
+// Guest privacy: wipe this session's server-side files when the page
+// is refreshed or left. Owner files are never touched.
+window.addEventListener('pagehide',()=>{
+  if(window.SKIP_CLEANUP||IS_OWNER)return;
+  try{navigator.sendBeacon('/api/logout-cleanup'+qs());}catch(e){}
+});
 refresh();setInterval(refresh,8000);
 </script>
 </body>

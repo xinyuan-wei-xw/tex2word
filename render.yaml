@@ -15,7 +15,9 @@ services:
     healthCheckPath: /api/health
     envVars:
       - key: OWNER_EMAIL
-        value: xinyuan.wei.xw@gmail.com
+        # set to the owner's login email in the Render dashboard
+        # (kept out of the repo for privacy)
+        value: owner@example.com
       - key: FIREBASE_SERVICE_ACCOUNT_JSON
         sync: false
       - key: FIREBASE_WEB_API_KEY
