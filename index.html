@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tex/PDF to Word — Toolbox</title>
+<style>
+  :root{--ink:#232a33;--muted:#69717c;--accent:#3451b2;--line:#dfe7f0;--bg:#f4f7fb;--card:#ffffff;}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink);margin:0;padding:0}
+  .wrap{max-width:860px;margin:0 auto;padding:36px 20px 60px}
+  header h1{font-size:26px;margin:0 0 6px}
+  header p{color:var(--muted);margin:0 0 24px;font-size:15px}
+  .modes{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:8px}
+  @media(max-width:640px){.modes{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:20px}
+  .card h2{font-size:16px;margin:0 0 4px}
+  .card .tag{display:inline-block;font-size:11px;font-weight:700;color:var(--accent);background:#e8eefb;border-radius:4px;padding:2px 8px;margin-bottom:8px}
+  .card p.desc{font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.5}
+  .card input[type=text]{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;font-size:14px;margin-bottom:10px}
+  .drop{border:2px dashed var(--line);border-radius:8px;padding:22px 12px;text-align:center;color:var(--muted);font-size:13px;cursor:pointer;transition:.15s;margin-bottom:12px}
+  .drop:hover,.drop.over{border-color:var(--accent);color:var(--accent);background:#f2f6fd}
+  .drop b{display:block;font-size:14px;color:var(--ink);margin-bottom:4px}
+  .btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:10px 20px;font-size:14px;font-weight:600;cursor:pointer;width:100%}
+  .btn:disabled{background:#a9b4c7;cursor:default}
+  .btn.ghost{background:#fff;color:var(--ink);border:1px solid var(--line);width:auto;padding:7px 14px;font-weight:500}
+  .btn.danger{background:#fff;color:#b3261e;border:1px solid #efc5c2;width:auto;padding:7px 14px;font-weight:500}
+  .msg{font-size:13px;color:var(--muted);margin-top:8px;min-height:18px}
+  .msg.ok{color:#1a7f37}.msg.err{color:#b3261e}
+  h2.sec{font-size:18px;margin:30px 0 12px}
+  .proj{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:12px}
+  .proj .row1{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .proj .name{font-weight:700;font-size:15px}
+  .pill{font-size:11px;font-weight:700;border-radius:20px;padding:3px 10px;background:#eef1f5;color:var(--muted)}
+  .pill.latex{background:#e8eefb;color:var(--accent)}
+  .pill.ocr{background:#fdf3e3;color:#9a6b1a}
+  .pill.done{background:#e6f4ea;color:#1a7f37}
+  .pill.err{background:#fdecea;color:#b3261e}
+  .proj .actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+  .log{background:#f6f8fa;border:1px solid var(--line);border-radius:8px;padding:10px 12px;font:12px/1.6 ui-monospace,Menlo,monospace;white-space:pre-wrap;max-height:200px;overflow:auto;margin-top:12px;display:none}
+  .log.show{display:block}
+  .empty{color:var(--muted);font-size:14px;background:var(--card);border:1px dashed var(--line);border-radius:10px;padding:26px;text-align:center}
+  .spin{display:inline-block;width:14px;height:14px;border:2px solid #c9d4e8;border-top-color:var(--accent);border-radius:50%;animation:s 0.8s linear infinite;vertical-align:-2px;margin-right:6px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  footer{margin-top:40px;color:var(--muted);font-size:12px;text-align:center}
+</style>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
+</head>
+<body>
+<div class="wrap">
+  <div id="authbar" style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-bottom:10px;font-size:13px;color:var(--muted)"></div>
+  <header>
+    <h1>Tex/PDF to Word <span id="modebadge"></span></h1>
+    <p>Convert LaTeX projects and PDFs into clean Word documents.</p>
+  </header>
+
+  <div class="modes">
+    <div class="card">
+      <span class="tag">MODE A · HIGH FIDELITY</span>
+      <h2>LaTeX project → Word</h2>
+      <p class="desc">Upload the whole project as a <b>.zip</b> — .tex, .bib, figures, and the compiled PDF. Text, math, tables, citations and figures are converted; formatting follows the compiled PDF.</p>
+      <input type="text" id="pname" placeholder="Project name (e.g. CHI 2027 paper)">
+      <div class="drop" id="dzip"><b>Drop .zip here or click to choose</b><span id="zfn">tex + bib + figures + PDF</span></div>
+      <input type="file" id="zfile" accept=".zip" hidden>
+      <button class="btn" id="upbtn" onclick="doUpload('zip')">Upload project</button>
+      <div class="msg" id="upmsg"></div>
+    </div>
+    <div class="card">
+      <span class="tag">MODE B · OCR</span>
+      <h2>Scanned PDF → Word</h2>
+      <p class="desc">Upload a <b>scanned / image PDF</b>. Pages are OCR'd and written into a clean, structured Word document with headings — original layout is not replicated.</p>
+      <div class="drop" id="dpdf"><b>Drop .pdf here or click to choose</b><span id="pfn">scanned or image-based PDF</span></div>
+      <input type="file" id="pfile" accept=".pdf" hidden>
+      <button class="btn" id="upbtn2" onclick="doUpload('pdf')">Upload PDF</button>
+      <div class="msg" id="upmsg2"></div>
+    </div>
+  </div>
+
+  <h2 class="sec">Projects</h2>
+  <div id="plist"><div class="empty">No projects yet — upload above to start.</div></div>
+
+  <footer id="privnote">Files are deleted from the server after you download your Word file.</footer>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// Identity: Firebase email/password login (same project as X Planner).
+// The owner account's files are kept; everyone else is a guest whose files
+// are deleted from the server right after the Word file is downloaded.
+let GUEST=sessionStorage.getItem('tw_guest');
+if(!GUEST){GUEST='guest_'+Math.random().toString(36).slice(2,10);
+  sessionStorage.setItem('tw_guest',GUEST);}
+let IS_OWNER=false, MYEMAIL='';
+const FB_KEY="__FIREBASE_API_KEY__";
+if(FB_KEY&&!FB_KEY.startsWith('__')){
+  firebase.initializeApp({apiKey:FB_KEY,
+    authDomain:"x-planner-99dd3.firebaseapp.com",
+    projectId:"x-planner-99dd3",
+    appId:"1:146714833806:web:d1c4516985514f7c35eadf"});
+  firebase.auth().onAuthStateChanged(async u=>{
+    MYEMAIL=u?(u.email||''):'';await checkMe();renderAuth();refresh();
+  });
+}
+
+async function checkMe(){
+  try{const me=await api('/api/me');IS_OWNER=!!me.is_owner;}
+  catch(e){IS_OWNER=false;}
+}
+async function idToken(){
+  const u=(typeof firebase!=='undefined')?firebase.auth().currentUser:null;
+  return u?await u.getIdToken():null;
+}
+async function api(p,o){
+  o=o||{};o.headers=Object.assign({},o.headers);
+  const t=await idToken();
+  if(t)o.headers['Authorization']='Bearer '+t;
+  const r=await fetch(p,o);if(!r.ok)throw new Error('HTTP '+r.status);return r.json();
+}
+function qs(){return '?user_id='+encodeURIComponent(GUEST);}
+function addAuth(fd){fd.append('user_id',GUEST);return fd;}
+
+function renderAuth(){
+  const bar=$('authbar');
+  if(!(FB_KEY&&!FB_KEY.startsWith('__'))){
+    bar.innerHTML='<span>Sign-in unavailable on this host.</span>';applyModeUI();return;
+  }
+  if(MYEMAIL){
+    bar.innerHTML='<span>'+esc(MYEMAIL)+'</span>'
+      +'<button class="btn ghost" style="padding:5px 12px" onclick="doSignOut()">Sign out</button>';
+  }else{
+    bar.innerHTML='<input type="email" id="em" placeholder="Email" value="xinyuan.wei.xw@gmail.com" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:210px">'
+      +'<input type="password" id="pw" placeholder="Password" style="padding:6px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;width:130px">'
+      +'<button class="btn ghost" style="padding:5px 12px" onclick="doSignIn()">Sign in</button>'
+      +'<span id="authmsg" style="color:#b3261e"></span>';
+  }
+  applyModeUI();
+}
+function applyModeUI(){
+  if(IS_OWNER){
+    $('modebadge').innerHTML='<span class="pill latex">owner mode</span>';
+    $('privnote').textContent='Signed in as owner — your files are kept until you delete the project.';
+  }else{
+    $('modebadge').innerHTML='';
+    $('privnote').textContent='Files are deleted from the server after you download your Word file.';
+  }
+}
+async function doSignIn(){
+  const m=$('authmsg');m.textContent='';
+  try{await firebase.auth().signInWithEmailAndPassword($('em').value.trim(),$('pw').value);}
+  catch(e){m.textContent='Sign-in failed.';}
+}
+async function doSignOut(){
+  try{await api('/api/logout-cleanup'+qs(),{method:'POST'});}catch(e){}
+  await firebase.auth().signOut();
+}
+renderAuth();
+
+function bindDrop(dz,fi,fn){
+  const d=$(dz);
+  d.onclick=()=>$(fi).click();
+  $(fi).onchange=()=>{const f=$(fi).files[0];if(f)$(fn).textContent=f.name;};
+  ['dragover','dragenter'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.add('over');}));
+  ['dragleave','drop'].forEach(e=>d.addEventListener(e,ev=>{ev.preventDefault();d.classList.remove('over');}));
+  d.addEventListener('drop',ev=>{const f=ev.dataTransfer.files[0];if(f){$(fi).files=ev.dataTransfer.files;$(fn).textContent=f.name;}});
+}
+bindDrop('dzip','zfile','zfn'); bindDrop('dpdf','pfile','pfn');
+
+async function doUpload(kind){
+  const fi=kind==='zip'?'zfile':'pfile', btn=kind==='zip'?'upbtn':'upbtn2', msg=kind==='zip'?'upmsg':'upmsg2';
+  const f=$(fi).files[0];
+  if(!f){setMsg(msg,'Choose a file first.','err');return;}
+  const b=$(btn);b.disabled=true;setMsg(msg,'<span class="spin"></span>Uploading…','');
+  try{
+    const fd=new FormData();fd.append('file',f);
+    if(kind==='zip')fd.append('name',$('pname').value);
+    const r=await api(kind==='zip'?'/api/upload':'/api/upload-pdf',{method:'POST',body:addAuth(fd)});
+    if(r.project_id){setMsg(msg,'Uploaded — see Projects below.','ok');$(fi).value='';}
+    else setMsg(msg,'Upload failed.','err');
+  }catch(e){setMsg(msg,'Upload failed: '+esc(e.message),'err');}
+  b.disabled=false;refresh();
+}
+function setMsg(id,html,cls){const e=$(id);e.className='msg '+cls;e.innerHTML=html;}
+
+async function refresh(){
+  let ps=[];
+  try{ps=await api('/api/projects'+qs());}catch(e){$('plist').innerHTML='<div class="empty">Could not reach the converter service.</div>';return;}
+  if(!ps.length){$('plist').innerHTML='<div class="empty">No projects yet — upload above to start.</div>';return;}
+  $('plist').innerHTML=ps.map(p=>{
+    const isOcr=p.mode==='ocr';
+    const st=p.status==='done'?'<span class="pill done">ready</span>'
+      :p.status==='error'?'<span class="pill err">failed</span>'
+      :p.status==='working'?'<span class="pill">working…</span>'
+      :'<span class="pill">uploaded</span>';
+    return `<div class="proj">
+      <div class="row1"><span class="name">${esc(p.name)}</span>
+        <span><span class="pill ${isOcr?'ocr':'latex'}">${isOcr?'scan → OCR':'LaTeX'}</span> ${st}</span></div>
+      <div class="actions">
+        ${p.status==='uploaded'||p.status==='error'?`<button class="btn ghost" onclick="doConvert('${p.id}',${isOcr})">${isOcr?'OCR to Word':'Convert to Word'}</button>`:''}
+        ${p.has_docx?`<button class="btn ghost" onclick="location='/api/download/${p.id}'+qs()">⬇ Download .docx</button>`:''}
+        ${p.log?`<button class="btn ghost" onclick="document.getElementById('log-${p.id}').classList.toggle('show')">Log</button>`:''}
+        <button class="btn danger" onclick="doDelete('${p.id}')">Delete</button>
+      </div>
+      ${p.error?`<div class="msg err">${esc(p.error)}</div>`:''}
+      ${p.log?`<div class="log" id="log-${p.id}">${esc(p.log.join('\n'))}</div>`:''}
+    </div>`;
+  }).join('');
+}
+
+async function doConvert(pid,isOcr){
+  refresh();
+  try{
+    const r=await api((isOcr?'/api/ocr/':'/api/convert/')+pid+qs(),{method:'POST'});
+    if(!r.ok)alert('Failed: '+(r.error||'see log'));
+  }catch(e){alert('Failed: '+e.message);}
+  refresh();
+}
+async function doDelete(pid){
+  if(!confirm('Delete this project and its Word file?'))return;
+  await api('/api/projects/'+pid+qs(),{method:'DELETE'});refresh();
+}
+refresh();setInterval(refresh,8000);
+</script>
+</body>
+</html>
