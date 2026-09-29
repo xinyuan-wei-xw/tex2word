@@ -50,6 +50,50 @@ def render_pages(pdf_path, out_dir, dpi=DPI):
     return paths
 
 
+def render_page(pdf_path, index, out_dir, dpi):
+    """Render a single page (0-based index) at the given DPI.
+
+    Used for the dense-page fallback: when tesseract times out on a page
+    at full DPI, the page is re-rendered smaller and OCR is retried.
+    """
+    doc = pymupdf.open(pdf_path)
+    pix = doc[index].get_pixmap(dpi=dpi)
+    fp = os.path.join(out_dir, f"page_{index:03d}.png")
+    # same atomic-write rule as render_pages: never expose a partial PNG
+    tmp = fp + ".tmp"
+    with open(tmp, "wb") as fh:
+        fh.write(pix.tobytes("png"))
+    os.replace(tmp, fp)
+    doc.close()
+    return fp
+
+
+def _ocr_page_with_dpi_fallback(pdf_path, index, img, pages_dir, n, total,
+                                log):
+    """OCR one page; on tesseract timeout re-render smaller and retry.
+
+    Returns the word list. Raises RuntimeError if tesseract still times
+    out at 150 DPI.
+    """
+    dpi = DPI
+    while True:
+        try:
+            return [w for w in ocr_tsv(img) if w["conf"] >= 30]
+        except subprocess.TimeoutExpired:
+            pass
+        if dpi == DPI:
+            dpi = 200
+        elif dpi == 200:
+            dpi = 150
+        else:
+            raise RuntimeError(
+                f"tesseract timed out on page {n}/{total} even at 150 DPI "
+                "— that page is too dense for the server; try a smaller PDF")
+        log.append(f"page {n}: tesseract timed out at higher DPI, "
+                   f"retrying at {dpi} DPI")
+        img = render_page(pdf_path, index, pages_dir, dpi)
+
+
 def _png_ok(path):
     """True if path is a complete PNG (valid signature + IEND trailer)."""
     try:
@@ -242,19 +286,14 @@ def ocr_convert(pdf_path, project_dir, profile_name="default",
         all_lines = []
         page_w = 2480  # A4 @300dpi fallback
         page_lines = []
-        for n, img in enumerate(imgs, 1):
+        for i, img in enumerate(imgs):
+            n = i + 1
+            words = _ocr_page_with_dpi_fallback(
+                pdf_path, i, img, pages_dir, n, len(imgs), log)
             try:
-                pix_w = pymupdf.Pixmap(img).width
-                page_w = pix_w
+                page_w = pymupdf.Pixmap(img).width
             except Exception:
                 pass
-            try:
-                words = [w for w in ocr_tsv(img) if w["conf"] >= 30]
-            except subprocess.TimeoutExpired:
-                raise RuntimeError(
-                    f"tesseract timed out on page {n}/{len(imgs)} — "
-                    "that page is too dense for the server at 300 DPI; "
-                    "try a smaller PDF")
             page_lines.append(build_lines(words))
             # keep the app-level lock fresh + report progress
             if os.path.exists(lock):
