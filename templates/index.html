@@ -197,7 +197,7 @@ async function refresh(){
       <div class="row1"><span class="name">${esc(p.name)}</span>
         <span><span class="pill ${isOcr?'ocr':'latex'}">${isOcr?'scan → OCR':'LaTeX'}</span> ${st}</span></div>
       <div class="actions">
-        ${p.status==='uploaded'||p.status==='error'?`<button class="btn ghost" onclick="doConvert('${p.id}',${isOcr})">${isOcr?'OCR to Word':'Convert to Word'}</button>`:''}
+        ${p.status==='uploaded'||p.status==='error'?`<button class="btn ghost" onclick="doConvert('${p.id}',${isOcr},this)">${isOcr?'OCR to Word':'Convert to Word'}</button>`:''}
         ${p.has_docx?`<button class="btn ghost" onclick="location='/api/download/${p.id}'+qs()">⬇ Download .docx</button>`:''}
         ${p.log?`<button class="btn ghost" onclick="document.getElementById('log-${p.id}').classList.toggle('show')">Log</button>`:''}
         <button class="btn danger" onclick="doDelete('${p.id}')">Delete</button>
@@ -208,7 +208,8 @@ async function refresh(){
   }).join('');
 }
 
-async function doConvert(pid,isOcr){
+async function doConvert(pid,isOcr,btn){
+  if(btn)btn.disabled=true;
   refresh();
   try{
     const r=await api((isOcr?'/api/ocr/':'/api/convert/')+pid+qs(),{method:'POST'});

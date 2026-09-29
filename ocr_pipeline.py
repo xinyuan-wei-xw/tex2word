@@ -13,9 +13,12 @@ Pipeline:
   4. Emit docx with the standard style profile.
 """
 import csv
+import glob
 import os
+import shutil
 import statistics
 import subprocess
+import uuid
 
 import pymupdf
 from docx import Document
@@ -32,14 +35,33 @@ def render_pages(pdf_path, out_dir, dpi=DPI):
     for i, page in enumerate(doc):
         pix = page.get_pixmap(dpi=dpi)
         fp = os.path.join(out_dir, f"page_{i:03d}.png")
-        pix.save(fp)
+        # write to temp name + atomic rename: a concurrent reader must
+        # never see a partially written PNG (tesseract "truncated file")
+        tmp = fp + ".part"
+        pix.save(tmp)
+        os.replace(tmp, fp)
         paths.append(fp)
     doc.close()
     return paths
 
 
+def _png_ok(path):
+    """True if path is a complete PNG (valid signature + IEND trailer)."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        return (len(data) > 20
+                and data[:8] == b"\x89PNG\r\n\x1a\n"
+                and data[-12:] == b"\x00\x00\x00\x00IEND\xaeB\x60\x82")
+    except OSError:
+        return False
+
+
 def ocr_tsv(image_path):
     """Run tesseract, return list of word dicts from TSV output."""
+    if not _png_ok(image_path):
+        raise RuntimeError(f"page image is incomplete, please convert again: "
+                           f"{os.path.basename(image_path)}")
     base = image_path + ".tsv"
     r = subprocess.run(
         ["tesseract", image_path, image_path, "-l", TESS_LANG, "tsv"],
@@ -183,7 +205,12 @@ def ocr_convert(pdf_path, project_dir, profile_name="default"):
     from pipeline import load_profile, _hex_rgb  # reuse style profiles
     from docx.enum.text import WD_ALIGN_PARAGRAPH
 
-    pages_dir = os.path.join(project_dir, "ocr_pages")
+    pages_dir = os.path.join(project_dir,
+                             "ocr_pages_" + uuid.uuid4().hex[:8])
+    # drop page images from earlier runs; each run gets its own dir so
+    # two concurrent converts of the same project can't share files
+    for old in glob.glob(os.path.join(project_dir, "ocr_pages*")):
+        shutil.rmtree(old, ignore_errors=True)
     imgs = render_pages(pdf_path, pages_dir)
     log.append(f"rendered {len(imgs)} pages at {DPI} DPI")
 
